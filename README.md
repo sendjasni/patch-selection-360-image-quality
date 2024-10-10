@@ -1,6 +1,8 @@
-This repository contains the code associated with the article: A Two-Fold Patch Selection Approach for Improving 360-Degree Image Quality Assessment
+This repository contains the code associated with the article: *A Two-Fold Patch Selection Approach for Improved 360-Degree Image Quality Assessment*.
 
-The project involves image computing a similarity metrics abetween embeddings of patches generated from 360-degree images. The code performs dimensionality reduction and optimization on input data, represented as an `hxw` shape, and provides results based on different distance metrics.
+The project involves computing similarity metrics between embeddings of patches generated from 360-degree images. The code performs dimensionality reduction and optimization on input data, represented as an `hxw` shape, and provides results based on different distance metrics.
+
+**Note:** The patch sampling and quality regression processes can be delivered on demand.
 
 ## Features
 
@@ -23,6 +25,7 @@ To run the script, use the following command:
 ```bash
 python emb_selection.py -sim [SIMILARITY_METRIC] -mat [PATH_TO_FEATURE_FILE]
 ```
+
 ### Arguments
 
 - `-sim`: Similarity distance metric. Choose from `MAN` (Manhattan), `MAH` (Mahalanobis), or `EU` (Euclidean). (Required)
