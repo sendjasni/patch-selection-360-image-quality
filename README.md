@@ -1,8 +1,12 @@
-This repository contains the code associated with the article: *A Two-Fold Patch Selection Approach for Improved 360-Degree Image Quality Assessment*.
+SThis repository contains the code associated with the article: *A Two-Fold Patch Selection Approach for Improved 360-Degree Image Quality Assessment*.
 
 The project involves computing similarity metrics between embeddings of patches generated from 360-degree images. The code performs dimensionality reduction and optimization on input data, represented as an `hxw` shape, and provides results based on different distance metrics.
 
-**Note:** The patch sampling and quality regression processes can be delivered on demand.
+![Study Diagram](diagram.png)
+
+**Figure**: Diagram illustrating the components of the proposed study. This repository provides the code for the *Embedding similarity-selection* component in order to speed up the submission process.
+
+**Note:** The code associated with patch sampling and encoding, and quality estimation processes can be delivered on demand.
 
 ## Features
 
@@ -33,7 +37,7 @@ python emb_selection.py -sim [SIMILARITY_METRIC] -mat [PATH_TO_FEATURE_FILE]
 
 ## Results
 
-The script will generate a `.pkl` file named `R_matrix_[SIM].pkl`, where `[SIM]` is the similarity metric used. This file contains the results of the optimization, including matrices \( W \), \( B \), and other details.
+The script will generate a `.pkl` file named `R_matrix_[SIM].pkl`, where `[SIM]` is the similarity metric used. This file contains the results of the optimization, including matrices \( W \), \( R \), and other details.
 
 ## Authors
 
