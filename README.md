@@ -8,7 +8,7 @@ The project involves computing similarity metrics between embeddings of patches 
 
 - **Distance Metrics**: Computes distances using Manhattan, Mahalanobis, or Euclidean metrics.
 - **Dimensionality Reduction**: Uses RBF kernel and eigen decomposition for dimensionality reduction.
-- **Optimization**: Finds optimal matrices \( W \) and \( B \) through iterative optimization.
+- **Optimization**: Finds optimal matrices \( W \) and \( R \) through iterative optimization.
 
 ## Installation
 
@@ -28,12 +28,12 @@ python emb_selection.py -sim [SIMILARITY_METRIC] -mat [PATH_TO_FEATURE_FILE]
 
 ### Arguments
 
-- `-sim`: Similarity distance metric. Choose from `MAN` (Manhattan), `MAH` (Mahalanobis), or `EU` (Euclidean). (Required)
+- `-sim`: Similarity distance metric. Choose from `MAN` (Manhattan), `MAH` (Mahalanobis), or `EUC` (Euclidean). (Required)
 - `-mat`: Path to the `.mat` file containing the feature data. (Required)
 
 ## Results
 
-The script will generate a `.pkl` file named `B_matrix_[SIM].pkl`, where `[SIM]` is the similarity metric used. This file contains the results of the optimization, including matrices \( W \), \( B \), and other details.
+The script will generate a `.pkl` file named `R_matrix_[SIM].pkl`, where `[SIM]` is the similarity metric used. This file contains the results of the optimization, including matrices \( W \), \( B \), and other details.
 
 ## Authors
 
