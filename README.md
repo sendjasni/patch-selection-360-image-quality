@@ -1,4 +1,4 @@
-This repository contains the code associated with the article: **A Two-Fold Patch Selection Approach for Improved 360-Degree Image Quality Assessment**. Currently under review.
+This repository contains the code associated with the article: [**A Two-Fold Patch Selection Approach for Improved 360-Degree Image Quality Assessment**](https://arxiv.org/abs/2412.12667), currently under review.
 
 The project involves computing similarity metrics between embeddings of patches generated from 360-degree images. The code performs dimensionality reduction and optimization on input data, represented as an `hxw` shape, and provides results based on different distance metrics.
 
