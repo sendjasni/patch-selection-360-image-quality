@@ -98,7 +98,7 @@ The three benchmarks used in the paper are publicly available from their respect
 ## Authors
 
 - **Dr. Abderrezzaq Sendjasni**, XLIM, Univ. de Poitiers
-- **Dr. Seif-Eddine Benkabou**, LIAS, ENSMA de Poitiers
+- **Dr. Seif-Eddine Benkabou**, Univ. de Poitiers
 - **Prof. Mohamed-Chaker Larabi**, XLIM, Univ. de Poitiers
 
 ## Acknowledgements
