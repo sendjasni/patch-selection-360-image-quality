@@ -1,131 +1,243 @@
-import numpy as np
-import time
-import scipy.io as sio
-from scipy.spatial.distance import cdist
-from scipy.linalg import eigh
-import pickle
+"""
+Similarity-preserving instance selection with residual-based outlier detection.
+
+Implements Algorithm 1: given patch embeddings E, learn a similarity-preserving
+transformation W and an l2,1-penalised residual R by alternating minimisation,
+then rank patches by the l2 norm of the columns of R (ascending = most relevant).
+
+Objective (Eq. 7):
+    min_{W,R}  ||E W - Z - R^T||_F^2 + alpha ||W||_{2,1} + beta ||R^T||_{2,1}
+"""
+
 import argparse
+import pickle
+import time
+
+import numpy as np
+import scipy.io as sio
+from scipy.linalg import eigh
+from scipy.spatial.distance import cdist
+
+EPS = 1e-8       # floor for the reweighting denominators
+RIDGE = 1e-6     # ridge term for numerical stability of the linear solves
 
 
-def run(E, Z, lamda, beta, maxIt):
+def _reweight(norms):
+    """Diagonal entries of the l2,1 reweighting matrix: d_jj = 1 / (2 ||m_j||)."""
+    return 1.0 / (2.0 * norms + EPS)
+
+
+def run(E, Z, alpha, beta, max_it=50, tol=1e-6):
     """
-    Perform optimization to find W and R matrices.
+    Alternating minimisation of Eq. 7.
 
     Args:
-        E (np.ndarray): Input data matrix (Embeddings).
-        Z (np.ndarray): Reduced space matrix.
-        lamda (float): Regularization parameter for W.
-        beta (float): Regularization parameter for R.
-        maxIt (int): Maximum number of iterations.
+        E (np.ndarray): (n, d) embedding matrix for one image.
+        Z (np.ndarray): (n, h) optimal low-dimensional target, S = Z Z^T.
+        alpha (float): regularisation weight on W (row sparsity over features).
+        beta (float): regularisation weight on R (column sparsity over samples).
+        max_it (int): maximum number of alternating iterations.
+        tol (float): relative decrease below which the loop stops.
 
     Returns:
-        dict: Results including W, R, loss, and time taken.
+        dict: W, R, per-iteration loss, wall-clock time and the settings used.
     """
-    n, m = E.shape
+    n, d = E.shape
     h = Z.shape[1]
 
-    # Initialization
-    W = np.random.rand(m, h)
-    D_w = np.eye(m)
-    R = np.random.rand(h, n)
-    D_r = np.eye(n)
-    Iw = np.eye(m)
-    Ib = np.eye(n)
-    epsIt = 1e-3
-    loss = np.zeros(maxIt)
+    # Algorithm 1, line 5: R starts at zero; the reweighting matrices start at I
+    # so that the first updates are plain ridge solves.
+    R = np.zeros((h, n))
+    d_w = np.ones(d)
+    d_r = np.ones(n)
+
+    I_d = np.eye(d)
+    I_n = np.eye(n)
+    EtE = E.T @ E                      # fixed per image
+    loss = []
     start_time = time.time()
 
-    for t in range(maxIt):
-        # Update W and B
-        W = np.linalg.inv(E.T @ E + lamda * D_w + epsIt * np.eye(m)) @ (E.T @ (R.T + Z)) # Eq. 18
-        R = (E @ W - Z).T @ np.linalg.inv(Ib + beta * D_r + epsIt * np.eye(n)).T  # Eq. 21
+    for t in range(max_it):
+        # --- Step 1: update W with R fixed (Eq. 9) -------------------------
+        # solve( E^T E + alpha D_w , E^T (R^T + Z) ) rather than forming the
+        # inverse explicitly: O(h d^2) instead of O(d^3), per Lemma 1.
+        A = EtE + alpha * np.diag(d_w) + RIDGE * I_d
+        W = np.linalg.solve(A, E.T @ (R.T + Z))
 
-        # Update diagonal matrices D_w and D_r
-        D_w = np.diag(0.5 * np.linalg.norm(W, axis=1)) + epsIt
-        D_r = np.diag(0.5 * np.linalg.norm(R.T, axis=1)) + epsIt
+        # --- Step 2: update R with W fixed (Eq. 11) ------------------------
+        B = I_n + beta * np.diag(d_r) + RIDGE * I_n
+        R = np.linalg.solve(B.T, (E @ W - Z)).T
 
-        # Compute the L21 norms
-        l_21_W = np.sum(np.linalg.norm(W, axis=0))
-        l_21_R = np.sum(np.linalg.norm(R, axis=0))
+        # --- Reweighting for the next iteration ----------------------------
+        # d_jj = 1 / (2 ||.||_2), NOT 0.5 * ||.||_2.
+        w_row_norms = np.linalg.norm(W, axis=1)      # rows of W  -> feature directions
+        r_col_norms = np.linalg.norm(R, axis=0)      # cols of R  -> samples
+        d_w = _reweight(w_row_norms)
+        d_r = _reweight(r_col_norms)
 
-    
-        # Compute the Loss
-        loss[t] = np.linalg.norm(E@W-R.T-Z, 'fro')**2 + lamda * l_21_W + beta*l_21_R # Eq. 15
-        if t >= 10 and (loss[t] - loss[t-1]) <= 1e-4:
-            break
-        
-    elapsed_time = time.time() - start_time
-    return {'W': W, 'R': R, 'loss': loss, 'time': elapsed_time, 'maxIt': maxIt, 'lambda': lamda, 'beta': beta, 'epsIt': epsIt}
+        # --- Objective (Eq. 7), consistent with the penalties above --------
+        l21_W = w_row_norms.sum()
+        l21_R = r_col_norms.sum()
+        fit = np.linalg.norm(E @ W - R.T - Z, 'fro') ** 2
+        loss.append(fit + alpha * l21_W + beta * l21_R)
+
+        if t >= 1:
+            decrease = loss[-2] - loss[-1]
+            if abs(decrease) <= tol * max(1.0, abs(loss[-2])):
+                break
+
+    return {
+        'W': W,
+        'R': R,
+        'loss': np.asarray(loss),
+        'n_iter': len(loss),
+        'time': time.time() - start_time,
+        'alpha': alpha,
+        'beta': beta,
+        'h': h,
+    }
 
 
-def process_image(E, sim, h):
+def similarity_matrix(E, sim, kernel='rbf'):
     """
-    Process an image by computing distances, RBF kernel, and running optimization.
+    Build the similarity matrix S from the embeddings.
 
-    Args:
-        E (np.ndarray): Input data matrix (Embeddings).
-        sim (str): Similarity metric to use ('MAN', 'MAH', or 'EU').
-        h (int): Number of components for dimensionality reduction.
-
-    Returns:
-        dict: Results from the optimization.
+    The RBF step is kept for backward compatibility with the original
+    implementation; set kernel='none' to use the negated distances directly.
     """
-    print(f'[INFO] Computing distances for similarity: {sim} ...')
-
-    # Compute distance matrix
     if sim == 'MAN':
         distances = cdist(E, E, metric='cityblock')
-
     elif sim == 'MAH':
-        cov_matrix = np.cov(E, rowvar=False)
-        cov_matrix += 1e-10 * np.eye(cov_matrix.shape[0])
-        distances = cdist(E, E, metric='mahalanobis', VI=cov_matrix)
-    
-    else:  # Default to Euclidean distance
+        cov = np.cov(E, rowvar=False)
+        cov += 1e-10 * np.eye(cov.shape[0])
+        distances = cdist(E, E, metric='mahalanobis', VI=cov)
+    else:  # EUC
         distances = cdist(E, E, metric='euclidean')
 
-    # Compute RBF kernel
-    gamma = 1.0 / (2.0 * np.mean(distances))
-    K = np.exp(-gamma * distances ** 2)
+    if kernel == 'rbf':
+        gamma = 1.0 / (2.0 * np.mean(distances) + EPS)
+        S = np.exp(-gamma * distances ** 2)
+    else:
+        S = -distances
+        S = S - S.min()
 
-    # Eigen decomposition
-    _, V = eigh(K)
-    V = np.flip(V, axis=0)
+    return 0.5 * (S + S.T)   # enforce exact symmetry before eigh
 
-    # Reduce dimensions
-    Z = V[:, :h]
 
-    # Run optimization
-    results = run(E, Z, lamda=0.1, beta=0.1, maxIt=50)
+def low_rank_target(S, h):
+    """
+    Z = Lambda_h sqrt(D_h) from the top-h eigenpairs of S, so that S ~ Z Z^T
+    (Section 3.4.2). eigh returns eigenvalues in ASCENDING order, so the top-h
+    are the LAST h columns.
+    """
+    vals, vecs = eigh(S)
+    idx = np.argsort(vals)[::-1][:h]
+    top_vals = np.clip(vals[idx], 0.0, None)
+    return vecs[:, idx] * np.sqrt(top_vals)
 
-    return results
+
+def select_patches(R, rate):
+    """
+    Algorithm 1, line 9: rank patches by the l2 norm of the columns of R in
+    ascending order and keep the most relevant fraction.
+
+    Returns:
+        (indices of the kept patches, irrelevance score of every patch)
+    """
+    scores = np.linalg.norm(R, axis=0)
+    order = np.argsort(scores)
+    k = max(1, int(round(rate * len(scores))))
+    return order[:k], scores
+
+
+def process_image(E, sim, h, alpha, beta, max_it, tol, kernel):
+    """Full pipeline for the embeddings of a single image."""
+    S = similarity_matrix(E, sim, kernel=kernel)
+    Z = low_rank_target(S, h)
+    return run(E, Z, alpha=alpha, beta=beta, max_it=max_it, tol=tol)
+
+
+def split_by_image(embeddings, step, counts_file=None):
+    """
+    Split the stacked embedding matrix into one block per image.
+
+    A fixed `step` assumes every image contributed the same number of patches,
+    which does not hold for the LAT and SP samplers. Pass a .npy/.txt file of
+    per-image patch counts via --counts when they vary.
+    """
+    if counts_file is not None:
+        counts = np.loadtxt(counts_file, dtype=int).ravel()
+        if counts.sum() != len(embeddings):
+            raise ValueError(
+                f'Patch counts sum to {counts.sum()} but {len(embeddings)} '
+                'embeddings were loaded.'
+            )
+        bounds = np.cumsum(counts)[:-1]
+        return np.split(embeddings, bounds)
+
+    if len(embeddings) % step != 0:
+        raise ValueError(
+            f'{len(embeddings)} embeddings is not a multiple of step={step}; '
+            'pass --counts with the per-image patch counts instead.'
+        )
+    return [embeddings[i:i + step] for i in range(0, len(embeddings), step)]
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Similarity-preserving instance selection for 360-degree IQA.')
+    parser.add_argument('-sim', '--sim', choices=['MAN', 'MAH', 'EUC'], required=True,
+                        help='Similarity distance metric.')
+    parser.add_argument('-mat', '--mat', required=True,
+                        help='Path to the .mat file containing the embeddings.')
+    parser.add_argument('--h', type=int, default=10,
+                        help='Projection dimension (default: 10).')
+    parser.add_argument('--alpha', type=float, default=0.1,
+                        help='l2,1 weight on W (default: 0.1).')
+    parser.add_argument('--beta', type=float, default=0.1,
+                        help='l2,1 weight on R; larger = sparser residual (default: 0.1).')
+    parser.add_argument('--rate', type=float, default=0.5,
+                        help='Selection rate, fraction of patches kept (default: 0.5).')
+    parser.add_argument('--step', type=int, default=180,
+                        help='Patches per image when this is constant (default: 180).')
+    parser.add_argument('--counts', default=None,
+                        help='File of per-image patch counts, for variable-size pools.')
+    parser.add_argument('--max-it', type=int, default=50,
+                        help='Maximum alternating iterations (default: 50).')
+    parser.add_argument('--tol', type=float, default=1e-6,
+                        help='Relative convergence tolerance (default: 1e-6).')
+    parser.add_argument('--kernel', choices=['rbf', 'none'], default='rbf',
+                        help='Kernelise the distance matrix (default: rbf).')
+    parser.add_argument('--seed', type=int, default=0,
+                        help='RNG seed (default: 0).')
+    parser.add_argument('--out', default=None,
+                        help='Output .pkl path (default: R_matrix_[SIM].pkl).')
+    args = parser.parse_args()
+
+    np.random.seed(args.seed)
+
+    embeddings = np.asarray(sio.loadmat(args.mat)['data'])
+    print(f'[INFO] Embeddings shape: {embeddings.shape} | dim: {embeddings.shape[1]}')
+
+    blocks = split_by_image(embeddings, args.step, args.counts)
+    print(f'[INFO] {len(blocks)} image(s) | metric: {args.sim} | h: {args.h}')
+
+    results = {}
+    for i, E in enumerate(blocks, start=1):
+        res = process_image(E, args.sim, args.h, args.alpha, args.beta,
+                            args.max_it, args.tol, args.kernel)
+        kept, scores = select_patches(res['R'], args.rate)
+        res['selected_idx'] = kept
+        res['irrelevance'] = scores
+        results[f'img_{i}'] = res
+        print(f'[INFO] img_{i}: {res["n_iter"]} iters, '
+              f'{res["time"]:.2f}s, kept {len(kept)}/{len(scores)} patches')
+
+    out = args.out or f'R_matrix_{args.sim}.pkl'
+    with open(out, 'wb') as fp:
+        pickle.dump(results, fp)
+    print(f'[INFO] Saved to {out}')
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Process patches features (Embeddings) and compute R matrix.')
-    parser.add_argument("-sim", "--sim", choices=['MAN', 'MAH', 'EUC'], required=True, help="Similarity distance.")
-    parser.add_argument("-mat", "--mat", required=True, help="Path to the feature file.")
-
-    args = parser.parse_args()
-
-    sim = args.sim
-    mat = args.mat
-
-    embeddings = sio.loadmat(mat)['data']
-    embeddings = np.array(embeddings)
-    dim = embeddings[0].shape[0]
-
-    print(f'[INFO] Embeddings shape: {embeddings.shape} | Dim is: {dim}')
-
-    step = 180  # Number of instances per image
-    image_args = [(embeddings[i:i + step], sim, 10)  # Reduced dimension h = 10 as example
-                  for i in range(0, len(embeddings), step)]
-
-    results = [process_image(E, sim, h) for E, _, h in image_args]
-
-    keys = ['img_' + str(i) for i in range(1, len(results) + 1)]
-    R_dict = dict(zip(keys, results))
-
-    with open(f'R_matrix_{sim}.pkl', 'wb') as fp:
-        pickle.dump(R_dict, fp)
-        print(f'Dictionary for {sim} distance saved successfully to file')
+    main()
