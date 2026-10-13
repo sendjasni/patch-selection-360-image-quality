@@ -3,10 +3,16 @@ Similarity-preserving instance selection with residual-based outlier detection.
 
 Implements Algorithm 1: given patch embeddings E, learn a similarity-preserving
 transformation W and an l2,1-penalised residual R by alternating minimisation,
-then rank patches by the l2 norm of the columns of R (ascending = most relevant).
+then rank patches by the l2 norm of the rows of R (ascending = most relevant).
 
-Objective (Eq. 7):
-    min_{W,R}  ||E W - Z - R^T||_F^2 + alpha ||W||_{2,1} + beta ||R^T||_{2,1}
+Objective (Eq. 9 of the manuscript):
+    min_{W,R}  ||E W - Z - R||_F^2 + alpha ||W||_{2,1} + beta ||R||_{2,1}
+
+Convention (aligned with the manuscript):
+    E : (n, d)   -- n patches, d-dimensional embeddings
+    Z : (n, h)   -- rank-h spectral factor of the affinity matrix S
+    W : (d, h)   -- similarity-preserving projection
+    R : (n, h)   -- residual, one row per patch; row j is the residual of patch j
 """
 
 import argparse
@@ -18,24 +24,24 @@ import scipy.io as sio
 from scipy.linalg import eigh
 from scipy.spatial.distance import cdist
 
-EPS = 1e-8       # floor for the reweighting denominators
-RIDGE = 1e-6     # ridge term for numerical stability of the linear solves
+EPS = 1e-8       # floor for the reweighting denominators (epsilon in Eq. 12)
+RIDGE = 1e-6     # ridge term (rho) for numerical stability of the linear solves
 
 
 def _reweight(norms):
-    """Diagonal entries of the l2,1 reweighting matrix: d_jj = 1 / (2 ||m_j||)."""
+    """Diagonal entries of the l2,1 reweighting matrix: d_jj = 1 / (2 ||m_j|| + eps)."""
     return 1.0 / (2.0 * norms + EPS)
 
 
 def run(E, Z, alpha, beta, max_it=50, tol=1e-6):
     """
-    Alternating minimisation of Eq. 7.
+    Alternating minimisation of Eq. 9 (manuscript).
 
     Args:
         E (np.ndarray): (n, d) embedding matrix for one image.
-        Z (np.ndarray): (n, h) optimal low-dimensional target, S = Z Z^T.
+        Z (np.ndarray): (n, h) optimal low-dimensional target, S ~ Z Z^T.
         alpha (float): regularisation weight on W (row sparsity over features).
-        beta (float): regularisation weight on R (column sparsity over samples).
+        beta (float): regularisation weight on R (row sparsity over samples).
         max_it (int): maximum number of alternating iterations.
         tol (float): relative decrease below which the loop stops.
 
@@ -47,38 +53,37 @@ def run(E, Z, alpha, beta, max_it=50, tol=1e-6):
 
     # Algorithm 1, line 5: R starts at zero; the reweighting matrices start at I
     # so that the first updates are plain ridge solves.
-    R = np.zeros((h, n))
+    R = np.zeros((n, h))                     # (n, h): one row per patch
     d_w = np.ones(d)
     d_r = np.ones(n)
 
     I_d = np.eye(d)
     I_n = np.eye(n)
-    EtE = E.T @ E                      # fixed per image
+    EtE = E.T @ E                            # fixed per image
     loss = []
     start_time = time.time()
 
     for t in range(max_it):
-        # --- Step 1: update W with R fixed (Eq. 9) -------------------------
-        # solve( E^T E + alpha D_w , E^T (R^T + Z) ) rather than forming the
-        # inverse explicitly: O(h d^2) instead of O(d^3), per Lemma 1.
+        # --- Step 1: update W with R fixed (Eq. 13 of the manuscript) ------
+        # Direct form: (E^T E + A) W = E^T (Z + R), with A = alpha D_w + rho I.
         A = EtE + alpha * np.diag(d_w) + RIDGE * I_d
-        W = np.linalg.solve(A, E.T @ (R.T + Z))
+        W = np.linalg.solve(A, E.T @ (Z + R))              # (d, h)
 
-        # --- Step 2: update R with W fixed (Eq. 11) ------------------------
-        B = I_n + beta * np.diag(d_r) + RIDGE * I_n
-        R = np.linalg.solve(B.T, (E @ W - Z)).T
+        # --- Step 2: update R with W fixed (Eq. 14 of the manuscript) ------
+        # R = B^{-1} (E W - Z) with B = (1 + rho) I + beta D_r.
+        B = (1.0 + RIDGE) * I_n + beta * np.diag(d_r)
+        R = np.linalg.solve(B, (E @ W - Z))                # (n, h)
 
         # --- Reweighting for the next iteration ----------------------------
-        # d_jj = 1 / (2 ||.||_2), NOT 0.5 * ||.||_2.
-        w_row_norms = np.linalg.norm(W, axis=1)      # rows of W  -> feature directions
-        r_col_norms = np.linalg.norm(R, axis=0)      # cols of R  -> samples
+        w_row_norms = np.linalg.norm(W, axis=1)   # rows of W -> feature directions
+        r_row_norms = np.linalg.norm(R, axis=1)   # rows of R -> samples (patches)
         d_w = _reweight(w_row_norms)
-        d_r = _reweight(r_col_norms)
+        d_r = _reweight(r_row_norms)
 
-        # --- Objective (Eq. 7), consistent with the penalties above --------
+        # --- Objective (Eq. 9), consistent with the penalties above --------
         l21_W = w_row_norms.sum()
-        l21_R = r_col_norms.sum()
-        fit = np.linalg.norm(E @ W - R.T - Z, 'fro') ** 2
+        l21_R = r_row_norms.sum()
+        fit = np.linalg.norm(E @ W - Z - R, 'fro') ** 2
         loss.append(fit + alpha * l21_W + beta * l21_R)
 
         if t >= 1:
@@ -102,8 +107,12 @@ def similarity_matrix(E, sim, kernel='rbf'):
     """
     Build the similarity matrix S from the embeddings.
 
-    The RBF step is kept for backward compatibility with the original
-    implementation; set kernel='none' to use the negated distances directly.
+    Note on MAH: the manuscript (Section 3.4.2) defines a Mahalanobis-type
+    quadratic form that uses the empirical covariance directly, not its inverse.
+    scipy's cdist uses the VI argument as-is in the quadratic form
+    (x-y)^T VI (x-y), so passing the covariance reproduces the manuscript's
+    convention. Passing np.linalg.inv(cov) would instead give the classical
+    Mahalanobis distance.
     """
     if sim == 'MAN':
         distances = cdist(E, E, metric='cityblock')
@@ -126,25 +135,28 @@ def similarity_matrix(E, sim, kernel='rbf'):
 
 def low_rank_target(S, h):
     """
-    Z = Lambda_h sqrt(D_h) from the top-h eigenpairs of S, so that S ~ Z Z^T
-    (Section 3.4.2). eigh returns eigenvalues in ASCENDING order, so the top-h
-    are the LAST h columns.
+    Z = U_h Lambda_h^{1/2} from the top-h eigenpairs of S, so that S ~ Z Z^T
+    (Section 3.4.2). eigh returns eigenvalues in ascending order, so the top-h
+    are the LAST h columns; we reverse the order to get a descending spectrum.
     """
     vals, vecs = eigh(S)
-    idx = np.argsort(vals)[::-1][:h]
+    h_eff = min(h, len(vals))                      # guard when h > n
+    idx = np.argsort(vals)[::-1][:h_eff]
     top_vals = np.clip(vals[idx], 0.0, None)
     return vecs[:, idx] * np.sqrt(top_vals)
 
 
 def select_patches(R, rate):
     """
-    Algorithm 1, line 9: rank patches by the l2 norm of the columns of R in
+    Algorithm 1, line 9: rank patches by the l2 norm of the ROWS of R in
     ascending order and keep the most relevant fraction.
+
+    Aligned with the manuscript convention: R is (n, h), one row per patch.
 
     Returns:
         (indices of the kept patches, irrelevance score of every patch)
     """
-    scores = np.linalg.norm(R, axis=0)
+    scores = np.linalg.norm(R, axis=1)             # row norms -> (n,)
     order = np.argsort(scores)
     k = max(1, int(round(rate * len(scores))))
     return order[:k], scores
